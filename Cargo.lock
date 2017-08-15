@@ -8,6 +8,11 @@ dependencies = [
 ]
 
 [[package]]
+name = "byteorder"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+
+[[package]]
 name = "log"
 version = "0.3.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -23,6 +28,10 @@ dependencies = [
 [[package]]
 name = "packstream"
 version = "0.1.0"
+dependencies = [
+ "byteorder 1.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+]
 
 [metadata]
+"checksum byteorder 1.1.0 (registry+https://github.com/rust-lang/crates.io-index)" = "ff81738b726f5d099632ceaffe7fb65b90212e8dce59d518729e7e8634032d3d"
 "checksum log 0.3.7 (registry+https://github.com/rust-lang/crates.io-index)" = "5141eca02775a762cc6cd564d8d2c50f67c0ea3a372cbf1c51592b3e029e10ad"

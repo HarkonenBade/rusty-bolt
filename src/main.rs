@@ -25,7 +25,6 @@
 use std::env;
 use std::collections::{VecDeque, HashMap};
 
-#[macro_use]
 extern crate neo4j;
 use neo4j::cypher::{CypherStream};
 
@@ -57,7 +56,7 @@ fn dump(mut cypher: CypherStream, statement: &str, parameters: HashMap<&str, Val
 //    cypher.begin_transaction(None);
 
     // execute statement
-    let result = cypher.run(statement, parameters);
+    let result = cypher.run(statement, parameters).unwrap();
     println!("{}", result.keys());
 
     // iterate result
