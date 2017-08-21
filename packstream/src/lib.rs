@@ -1,11 +1,11 @@
 extern crate byteorder;
 
-use std::io::Write;
+use std::io::{self, Cursor, Read, Write};
 use std::ops::{Index, Range, RangeTo, RangeFrom, RangeFull};
 use std::vec::Vec;
 use std::collections::HashMap;
 
-use byteorder::{BigEndian, WriteBytesExt};
+use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 
 pub mod values;
 use values::{Value};
@@ -17,7 +17,7 @@ pub struct Packer {
 
 impl Packer {
     pub fn new() -> Packer {
-        Packer { buffer: vec![0u8; 0] }
+        Packer { buffer: Vec::with_capacity(4096) }
     }
 
     pub fn clear(&mut self) {
@@ -210,36 +210,34 @@ impl Index<RangeFull> for Packer {
     }
 }
 
-#[derive(Default)]
 pub struct Unpacker {
-    buffer: Vec<u8>,
-    unpack_ptr: usize,
+    cursor: Cursor<Vec<u8>>,
 }
 
 impl Unpacker {
     pub fn new() -> Unpacker {
-        Unpacker { buffer: vec![0u8; 0], unpack_ptr: 0 }
-    }
-
-    pub fn from_slice(src: &[u8]) -> Unpacker {
-        Unpacker { buffer: src.to_vec(), unpack_ptr: 0 }
+        let buf: Vec<u8> = Vec::new();
+        Unpacker { cursor: Cursor::new(buf) }
     }
 
     pub fn clear(&mut self) {
-        self.buffer.clear();
-        self.unpack_ptr = 0;
+        self.cursor.get_mut().clear();
+        self.cursor.set_position(0);
+    }
+  
+    pub fn load<R>(&mut self, mut reader: R) -> io::Result<()> 
+        where R: Read {
+        reader.read_to_end(self.cursor.get_mut())?;
+        Ok(())
     }
 
-    pub fn buffer(&mut self, size: usize) -> &mut [u8] {
-        let start: usize = self.buffer.len();
-        let end: usize = start + size;
-        self.buffer.resize(end, 0);
-
-        &mut self.buffer[start..end]
+    pub fn load_n<R>(&mut self, reader: R, bytes: u64) -> io::Result<()>
+        where R: Read {
+        self.load(reader.take(bytes))
     }
 
     pub fn unpack(&mut self) -> Value {
-        let marker = self.unpack_u8();
+        let marker = self.cursor.read_u8().unwrap();
         match marker {
             0x00...0x7F => Value::Integer(marker as i64),
             0x80...0x8F => self.unpack_string((marker & 0x0F) as usize),
@@ -247,24 +245,56 @@ impl Unpacker {
             0xA0...0xAF => self.unpack_map((marker & 0x0F) as usize),
             0xB0...0xBF => self.unpack_structure((marker & 0x0F) as usize),
             0xC0 => Value::Null,
-            // TODO: C1
+            0xC1 => Value::Float(self.cursor.read_f64::<BigEndian>().unwrap()),
             0xC2 => Value::Boolean(false),
             0xC3 => Value::Boolean(true),
-            0xC8 => Value::Integer(self.unpack_i8() as i64),
-            0xC9 => Value::Integer(self.unpack_i16() as i64),
-            0xCA => Value::Integer(self.unpack_i32() as i64),
-            0xCB => Value::Integer(self.unpack_i64() as i64),
+            0xC8 => Value::Integer(self.cursor.read_i8().unwrap() as i64),
+            0xC9 => Value::Integer(self.cursor.read_i16::<BigEndian>().unwrap() as i64),
+            0xCA => Value::Integer(self.cursor.read_i32::<BigEndian>().unwrap() as i64),
+            0xCB => Value::Integer(self.cursor.read_i64::<BigEndian>().unwrap()),
             0xD0 => {
-                let size: usize = self.unpack_u8() as usize;
+                let size = self.cursor.read_u8().unwrap() as usize;
                 self.unpack_string(size)
             },
             0xD1 => {
-                let size: usize = self.unpack_u16() as usize;
+                let size = self.cursor.read_u16::<BigEndian>().unwrap() as usize;
                 self.unpack_string(size)
             },
             0xD2 => {
-                let size: usize = self.unpack_u32() as usize;
+                let size = self.cursor.read_u32::<BigEndian>().unwrap() as usize;
                 self.unpack_string(size)
+            },
+            0xD4 => {
+                let size = self.cursor.read_u8().unwrap() as usize;
+                self.unpack_list(size)
+            },
+            0xD5 => {
+                let size = self.cursor.read_u16::<BigEndian>().unwrap() as usize;
+                self.unpack_list(size)
+            },
+            0xD6 => {
+                let size = self.cursor.read_u32::<BigEndian>().unwrap() as usize;
+                self.unpack_list(size)
+            },
+            0xD8 => {
+                let size = self.cursor.read_u8().unwrap() as usize;
+                self.unpack_map(size)
+            },
+            0xD9 => {
+                let size = self.cursor.read_u16::<BigEndian>().unwrap() as usize;
+                self.unpack_map(size)
+            },
+            0xDA => {
+                let size = self.cursor.read_u32::<BigEndian>().unwrap() as usize;
+                self.unpack_map(size)
+            },
+            0xDC => {
+                let size = self.cursor.read_u8().unwrap() as usize;
+                self.unpack_structure(size)
+            },
+            0xDD => {
+                let size = self.cursor.read_u16::<BigEndian>().unwrap() as usize;
+                self.unpack_structure(size)
             },
             0xF0...0xFF => Value::Integer(marker as i64 - 0x100),
             _ => panic!("Illegal value with marker {:02X}", marker),
@@ -272,10 +302,10 @@ impl Unpacker {
     }
 
     fn unpack_string(&mut self, size: usize) -> Value {
-        let end_offset = self.unpack_ptr + size;
-        let value = String::from_utf8_lossy(&self.buffer[self.unpack_ptr..end_offset]).into_owned();
-        self.unpack_ptr = end_offset;
-        Value::String(value)
+        let mut cur = &mut self.cursor;
+        let mut s = String::new();
+        cur.take(size as u64).read_to_string(&mut s).unwrap();
+        Value::String(s)
     }
 
     fn unpack_list(&mut self, size: usize) -> Value {
@@ -301,59 +331,13 @@ impl Unpacker {
     }
 
     fn unpack_structure(&mut self, size: usize) -> Value {
-        let signature: u8 = self.unpack_u8();
+        let signature: u8 = self.cursor.read_u8().unwrap();
         let mut fields: Vec<Value> = vec!();
         for _ in 0..size {
             fields.push(self.unpack());
         }
         Value::Structure { signature: signature, fields: fields }
     }
-
-    fn unpack_u8(&mut self) -> u8 {
-        let value: u8 = self.buffer[self.unpack_ptr];
-        self.unpack_ptr += 1;
-        value
-    }
-
-    fn unpack_u16(&mut self) -> u16 {
-        (self.unpack_u8() as u16) << 8 | self.unpack_u8() as u16
-    }
-
-    fn unpack_i8(&mut self) -> i8 {
-        let value: i8 = self.buffer[self.unpack_ptr] as i8;
-        self.unpack_ptr += 1;
-        value
-    }
-
-    fn unpack_u32(&mut self) -> u32 {
-        (self.unpack_u8() as u32) << 24 |
-        (self.unpack_u8() as u32) << 16 |
-        (self.unpack_u8() as u32) << 8 |
-         self.unpack_u8() as u32
-    }
-
-    fn unpack_i16(&mut self) -> i16 {
-        (self.unpack_i8() as i16) << 8 | self.unpack_u8() as i16
-    }
-
-    fn unpack_i32(&mut self) -> i32 {
-        (self.unpack_i8() as i32) << 24 |
-        (self.unpack_u8() as i32) << 16 |
-        (self.unpack_u8() as i32) << 8 |
-         self.unpack_u8() as i32
-    }
-
-    fn unpack_i64(&mut self) -> i64 {
-        (self.unpack_i8() as i64) << 56 |
-        (self.unpack_u8() as i64) << 48 |
-        (self.unpack_u8() as i64) << 40 |
-        (self.unpack_u8() as i64) << 32 |
-        (self.unpack_u8() as i64) << 24 |
-        (self.unpack_u8() as i64) << 16 |
-        (self.unpack_u8() as i64) << 8 |
-         self.unpack_u8() as i64
-    }
-
 }
 
 #[cfg(test)]
