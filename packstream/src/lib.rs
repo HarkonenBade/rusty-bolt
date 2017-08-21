@@ -1,5 +1,6 @@
 extern crate byteorder;
 
+use std::io::Write;
 use std::ops::{Index, Range, RangeTo, RangeFrom, RangeFull};
 use std::vec::Vec;
 use std::collections::HashMap;
@@ -116,7 +117,7 @@ impl Packer {
         } else {
             panic!("String too long to pack");
         }
-        self.write_slice(value.as_bytes());
+        self.buffer.write_all(value.as_bytes()).unwrap();
     }
 
     pub fn pack_list_header(&mut self, size: usize) {
@@ -167,11 +168,6 @@ impl Packer {
         }
         self.buffer.write_u8(signature).unwrap();
     }
-
-    fn write_slice(&mut self, buf: &[u8]) {
-        self.buffer.append(&mut buf.to_vec());
-    }
-
 }
 
 impl Index<usize> for Packer {
